@@ -21,6 +21,7 @@ final class AppModel {
     var stored: StoredAccounts
     var usages: [UUID: AccountUsage] = [:]
     var isRefreshing = false
+    private(set) var lastRefreshedAt: Date?
     var draft: AccountDraft?
     var alertMessage: String?
     private(set) var configurationLoadError: String?
@@ -230,6 +231,7 @@ final class AppModel {
         }
         usages = next
         usageDay = bounds.start
+        lastRefreshedAt = committedAt
         writeStatus(at: committedAt)
         onMenuTitleChange?()
     }

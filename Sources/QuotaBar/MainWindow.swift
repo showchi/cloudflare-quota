@@ -21,6 +21,9 @@ struct MainWindow: View {
                     Text(L10n.format(.windowSubtitle, UsageMath.defaultDailyLimit, language: model.stored.language))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text(refreshStamp)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Stepper(
@@ -142,6 +145,13 @@ struct MainWindow: View {
         .onAppear {
             model.start()
         }
+    }
+
+    private var refreshStamp: String {
+        guard let date = model.lastRefreshedAt else {
+            return L10n.text(.notRefreshedYet, language: model.stored.language)
+        }
+        return L10n.format(.lastRefreshed, RefreshStamp.string(from: date), language: model.stored.language)
     }
 }
 

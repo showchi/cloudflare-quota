@@ -1,6 +1,8 @@
 # Cloudflare Quota
 
-macOS 菜单栏应用。查看多个 Cloudflare 免费账号当天的 Workers / Pages Functions 请求量，并标出还没用到切换线、剩余最多的账号。
+Unofficial macOS menu-bar app. It shows today's Workers and Pages Functions usage for several Cloudflare free accounts and marks the one with the most quota left below the switch line. It does not switch traffic.
+
+非官方 macOS 菜单栏应用，与 Cloudflare, Inc. 无关。查看多个 Cloudflare 免费账号当天的 Workers / Pages Functions 请求量，并标出还没用到切换线、剩余最多的账号。
 
 免费计划每天 100,000 次，Workers 和 Pages Functions 共用，午夜 UTC 重置。纯静态 Pages 不计。应用合计 Workers 和 Pages Functions 两套 GraphQL Analytics 采样统计，不是账单数字；跨数据集覆盖范围仍须与实际账号控制台核对，不能仅凭脚本同名判断调用重复。默认在显示用量到 75% 时不再建议这个账号。
 
@@ -15,12 +17,14 @@ macOS 菜单栏应用。查看多个 Cloudflare 免费账号当天的 Workers / 
 3. 账号范围选这一个账号。
 4. 复制 Token。Account ID 在 Workers & Pages 右侧栏，也可以留空。Token 只能看到一个账号时，应用会自己填上。
 
+不要把 API Token 贴到 Issue、Pull Request 或日志里。Token 只保存在本机。
+
 ## 运行
 
-需要 macOS 15 和 Swift 6。本机如果默认开发者目录是命令行工具，测试要指向完整 Xcode：
+需要 macOS 15 和 Swift 6。如果 `xcode-select -p` 指向 Command Line Tools，把 `DEVELOPER_DIR` 指到完整 Xcode，例如：
 
 ```bash
-export DEVELOPER_DIR=/Applications/Xcode-26.6.0.app/Contents/Developer
+export DEVELOPER_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer | head -1)"
 ```
 
 ```bash
@@ -60,3 +64,7 @@ Token 在 `~/Library/Application Support/CloudflareQuota/tokens.json`，文件�
 排查面板点击事件时，可在终端运行 `QUOTA_DEBUG_EVENTS=1 swift run QuotaBar`，并在 Console 中筛选 `QuotaPanel`。日志默认关闭，开启后只记录事件来源、类型、时间、窗口编号、鼠标位置和面板显隐，不记录账号名称或 Token。依次验证首次点击打开、再次点击关闭、面板内滚动与按钮、外部点击关闭，以及面板打开时自动刷新。该日志用于确认事件实际路由与回调顺序，不能替代原生界面复现。
 
 账号编辑会在配置目录中临时创建 `.accounts.json.pending` 恢复记录，权限与 Token 文件一样为 0600；其中包含恢复所需的配置和凭据，成功后会删除。保存中断后，下次启动会先恢复旧状态或完成已提交的状态；恢复失败时暂停加载和写入，保留记录供修复权限后重试。此机制面向单个应用实例的进程中断，不承诺多个进程并发写入或硬件断电时的事务保证。
+
+## 许可证
+
+[MIT](LICENSE)

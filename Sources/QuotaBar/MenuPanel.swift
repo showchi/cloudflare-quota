@@ -12,9 +12,12 @@ struct MenuPanel: View {
                 Text(L10n.text(.todayUsage, language: model.stored.language))
                     .font(.headline)
                 Spacer()
-                Text(L10n.format(.resetsRelative, model.resetsAt.formatted(.relative(presentation: .numeric)), language: model.stored.language))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(refreshStamp)
+                    Text(L10n.format(.resetsRelative, model.resetsAt.formatted(.relative(presentation: .numeric)), language: model.stored.language))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             if !model.stored.accounts.isEmpty || model.statusPublicationError != nil {
@@ -72,6 +75,27 @@ struct MenuPanel: View {
     private var accountListHeight: CGFloat {
         MenuPanelLayout.accountListHeight(maximumPanelHeight: maximumHeight)
     }
+
+    private var refreshStamp: String {
+        guard let date = model.lastRefreshedAt else {
+            return L10n.text(.notRefreshedYet, language: model.stored.language)
+        }
+        return L10n.format(.lastRefreshed, RefreshStamp.string(from: date), language: model.stored.language)
+    }
+}
+
+enum RefreshStamp {
+    static func string(from date: Date) -> String {
+        formatter.string(from: date)
+    }
+
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.dateStyle = .short
+        formatter.timeStyle = .medium
+        return formatter
+    }()
 }
 
 enum MenuPanelLayout {

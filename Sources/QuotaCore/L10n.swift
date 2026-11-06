@@ -26,6 +26,8 @@ public enum L10n {
         case configurationUnreadable
         case todayUsage
         case resetsRelative
+        case lastRefreshed
+        case notRefreshedYet
         case noAccountsMenu
         case sampledWarning
         case refreshing
@@ -120,6 +122,8 @@ public enum L10n {
         .configurationUnreadable: "The configuration could not be read, so changes are paused. Fix the file and relaunch: %@",
         .todayUsage: "Today",
         .resetsRelative: "UTC reset %@",
+        .lastRefreshed: "Refreshed %@",
+        .notRefreshedYet: "Not refreshed yet",
         .noAccountsMenu: "No accounts yet. Add a read-only Analytics token to start.",
         .sampledWarning: "These numbers are sampled. Switch before the threshold.",
         .refreshing: "Refreshing",
@@ -198,6 +202,8 @@ public enum L10n {
         .configurationUnreadable: "配置读取失败，已暂停配置写入。请修复配置文件后重新启动：%@",
         .todayUsage: "今日用量",
         .resetsRelative: "UTC 重置 %@",
+        .lastRefreshed: "刷新于 %@",
+        .notRefreshedYet: "还没有刷新",
         .noAccountsMenu: "还没有账号。添加一个只读 Analytics Token 后开始统计。",
         .sampledWarning: "数字来自采样统计，到切换线前就换账号。",
         .refreshing: "刷新中",

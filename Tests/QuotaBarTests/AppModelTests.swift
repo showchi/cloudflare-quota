@@ -323,6 +323,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(sleeper.delays, [.seconds(60)])
         XCTAssertEqual(commits, 1)
         XCTAssertEqual(model.usages[config.id]?.requests, 12)
+        XCTAssertEqual(model.lastRefreshedAt, midnight)
         XCTAssertEqual(model.suggestedAccountID, config.id)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
