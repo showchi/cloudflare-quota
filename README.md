@@ -39,7 +39,7 @@ python3 -m pip install -r scripts/requirements.txt
 scripts/package-dmg.sh
 ```
 
-The script writes `dist/CloudflareQuota.dmg`. Open it and drag the app on the left to Applications on the right. The app is signed ad hoc. If macOS blocks the first launch, Control-click the app in Applications and choose Open.
+The script writes `dist/CloudflareQuota.dmg`. Open it and drag the app on the left to Applications on the right. The app is signed ad hoc and is not notarized. Only proceed if you trust the download source and are certain the app has not been tampered with. If macOS blocks the first launch, first try opening the app from Applications, then go to System Settings → Privacy & Security → Open Anyway and confirm Open. See [Apple's instructions](https://support.apple.com/en-us/102445).
 
 The menu bar shows the percentage of the fullest account. It shows `!` when an account refresh or status publication fails. Refresh starts at launch and repeats on the configured interval, without opening the menu. Manage Accounts opens the main window, where accounts can be added, edited, or deleted. The window also switches Chinese or English, light, dark, or system appearance, and can hide the menu-bar icon. The version and build are at the bottom. The app has no Dock icon while it is running. After hiding the menu-bar icon, open the app from Applications once to return to the main window.
 
