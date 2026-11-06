@@ -1,27 +1,25 @@
 # Cloudflare Quota
 
-Unofficial macOS menu-bar app. It shows today's Workers and Pages Functions usage for several Cloudflare free accounts and marks the one with the most quota left below the switch line. It does not switch traffic.
+English | [中文](README.zh-CN.md)
 
-非官方 macOS 菜单栏应用，与 Cloudflare, Inc. 无关。查看多个 Cloudflare 免费账号当天的 Workers / Pages Functions 请求量，并标出还没用到切换线、剩余最多的账号。
+Unofficial macOS menu-bar app. It is not affiliated with Cloudflare, Inc. It shows today's Workers and Pages Functions usage for several Cloudflare free accounts and marks the account that still has the most quota left below the switch line. It does not switch traffic. Callers read the local status file and choose the address for that account themselves.
 
-免费计划每天 100,000 次，Workers 和 Pages Functions 共用，午夜 UTC 重置。纯静态 Pages 不计。应用合计 Workers 和 Pages Functions 两套 GraphQL Analytics 采样统计，不是账单数字；跨数据集覆盖范围仍须与实际账号控制台核对，不能仅凭脚本同名判断调用重复。默认在显示用量到 75% 时不再建议这个账号。
+The free plan includes 100,000 requests per day. Workers and Pages Functions share that quota, and it resets at midnight UTC. Static Pages do not count. The app adds the sampled Workers and Pages Functions GraphQL Analytics datasets. Those numbers are not the billed count. Compare the datasets with the account dashboard before treating them as the same traffic; matching script names alone does not prove that the calls overlap. By default, an account is no longer suggested once its displayed usage reaches 75%.
 
-应用不切换流量。调用方读取本机状态文件，自己选择对应账号的地址。
+## Create a token
 
-## 准备 Token
+Create one API token for each Cloudflare login:
 
-每个 Cloudflare 登录单独建一个 API Token：
+1. Open My Profile → API Tokens → Create Token → Create Custom Token.
+2. Add only **Account → Account Analytics → Read**.
+3. Limit the token to that one account.
+4. Copy the token. The Account ID is in the Workers & Pages sidebar. Leave it blank if the token can see only one account; the app fills it in.
 
-1. 打开 My Profile → API Tokens → Create Token → Create Custom Token。
-2. 权限只加 **Account → Account Analytics → Read**。
-3. 账号范围选这一个账号。
-4. 复制 Token。Account ID 在 Workers & Pages 右侧栏，也可以留空。Token 只能看到一个账号时，应用会自己填上。
+Do not paste an API token into an issue, pull request, or log. Tokens stay on this Mac.
 
-不要把 API Token 贴到 Issue、Pull Request 或日志里。Token 只保存在本机。
+## Run
 
-## 运行
-
-需要 macOS 15 和 Swift 6。如果 `xcode-select -p` 指向 Command Line Tools，把 `DEVELOPER_DIR` 指到完整 Xcode，例如：
+Requires macOS 15 and Swift 6. If `xcode-select -p` points at the Command Line Tools, point `DEVELOPER_DIR` at a full Xcode installation:
 
 ```bash
 export DEVELOPER_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer | head -1)"
@@ -32,7 +30,7 @@ swift test
 swift run QuotaBar
 ```
 
-打包需要 Python 3 和 Pillow，建议使用虚拟环境：
+Packaging needs Python 3 and Pillow. Use a virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -41,30 +39,30 @@ python3 -m pip install -r scripts/requirements.txt
 scripts/package-dmg.sh
 ```
 
-得到 `dist/CloudflareQuota.dmg`。打开后把左边的应用拖到右边的「应用程序」。这是本机临时签名，第一次打开如果被拦截，在「应用程序」里对它按住 Control 再点「打开」。
+The script writes `dist/CloudflareQuota.dmg`. Open it and drag the app on the left to Applications on the right. The app is signed ad hoc. If macOS blocks the first launch, Control-click the app in Applications and choose Open.
 
-菜单栏显示当前最满账号的百分比。某个账号刷新失败或状态发布失败时显示 `!`。启动后按设定的间隔自动刷新，不用点开菜单。点「管理账号」打开主窗口，可以添加、编辑、删除账号，切换中文或英文、明亮、暗黑或跟随系统，也可以关掉菜单栏图标。窗口底部显示版本号和 build。应用平时没有程序坞图标。关掉菜单栏图标后，再从「应用程序」打开一次就能回到主窗口。
+The menu bar shows the percentage of the fullest account. It shows `!` when an account refresh or status publication fails. Refresh starts at launch and repeats on the configured interval, without opening the menu. Manage Accounts opens the main window, where accounts can be added, edited, or deleted. The window also switches Chinese or English, light, dark, or system appearance, and can hide the menu-bar icon. The version and build are at the bottom. The app has no Dock icon while it is running. After hiding the menu-bar icon, open the app from Applications once to return to the main window.
 
-Token 在 `~/Library/Application Support/CloudflareQuota/tokens.json`，文件权限是仅当前用户可读。账号名称和限额在同一目录的 `accounts.json`，里面没有 Token。
+Tokens are stored in `~/Library/Application Support/CloudflareQuota/tokens.json` with mode `0600`. Account names and limits are in `accounts.json` in the same directory. That file contains no tokens.
 
-状态文件在：
+The status file is:
 
 `~/.cloudflare-quota/status.json`
 
-`suggestedAccountID` 是当前建议使用的本地账号 id。文件里没有 Token。
+`suggestedAccountID` is the local ID of the account to use. The file contains no tokens.
 
-配置加载或事务恢复失败时，应用会发布无推荐、空账号列表的状态。任何状态发布失败（包括删除、停用账号或刷新发现账号不可用后），都会尝试删除旧状态文件；撤销失败时明确告警。发布错误会持续显示在菜单面板和管理窗口中，不会被其他操作错误掩盖。状态发布失败不会回滚已成功保存的账号操作，也不会通过默认配置覆盖原文件。
+If configuration loading or transaction recovery fails, the app publishes a status with no suggestion and an empty account list. Any failed status publication, including one after a delete, a disable, or a refresh that finds an account unusable, tries to remove the old status file. If that removal fails, the app shows an explicit warning. A publication error stays visible in the menu panel and the management window and is not replaced by a later operation error. A failed publication does not roll back an account change that was already saved, and it does not replace the original configuration with defaults.
 
-状态发布使用独立重试：从 1 秒开始退避，最长间隔 60 秒；每次按最新配置、用量和 UTC 日期生成状态，不重复请求 Cloudflare。发布成功后取消重试。
+Status publication retries on its own. The delay starts at 1 second and grows to at most 60 seconds. Each attempt uses the latest configuration, usage, and UTC day, and it does not call Cloudflare again. A successful publication cancels the retry.
 
-调用方应将状态文件缺失、无法解析或过期视为不可用；至少检查 `generatedAt` 属于当前 UTC 日且当前时间早于 `resetsAt`，并设置最大可接受陈旧时间，不能无限期缓存上次的推荐。`generatedAt` 是状态生成时刻，用量的新鲜度还应检查 `accounts[].usage.fetchedAt`。
+Callers should treat a missing, unreadable, or stale status file as unavailable. At minimum, check that `generatedAt` belongs to the current UTC day and that the current time is before `resetsAt`. Also set a maximum age; do not keep the previous suggestion indefinitely. `generatedAt` is when the status was written. For usage freshness, also check `accounts[].usage.fetchedAt`.
 
-当查询结果达到条数上限时，应用会按不重叠的时间窗口补查，只有所有子窗口均完整才合计。单次刷新每账号最多查询 31 次；如果一秒窗口仍满页、超过查询预算或任何子查询失败，应用会报告失败并暂停推荐该账号，不会把部分统计当作完整用量。此补查沿用已有时间过滤条件，不使用 cursor，也不按脚本名去重。
+When a query reaches its row limit, the app splits the day into non-overlapping windows and totals a result only when every window is complete. One refresh makes at most 31 queries per account. If a one-second window is still full, the query budget is exhausted, or any window fails, the app reports the failure and stops suggesting that account. It does not present a partial total as complete usage. The follow-up queries reuse the existing time filters. They do not use a cursor and do not deduplicate by script name.
 
-排查面板点击事件时，可在终端运行 `QUOTA_DEBUG_EVENTS=1 swift run QuotaBar`，并在 Console 中筛选 `QuotaPanel`。日志默认关闭，开启后只记录事件来源、类型、时间、窗口编号、鼠标位置和面板显隐，不记录账号名称或 Token。依次验证首次点击打开、再次点击关闭、面板内滚动与按钮、外部点击关闭，以及面板打开时自动刷新。该日志用于确认事件实际路由与回调顺序，不能替代原生界面复现。
+To trace panel clicks, run `QUOTA_DEBUG_EVENTS=1 swift run QuotaBar` and filter Console for `QuotaPanel`. The log is off by default. When enabled, it records the event source, type, time, window number, pointer location, and panel visibility. It does not record account names or tokens. Check the first click opening the panel, the next click closing it, scrolling and buttons inside the panel, a click outside closing it, and an automatic refresh while the panel is open. The log shows event routing and callback order. It does not replace checking the native interface.
 
-账号编辑会在配置目录中临时创建 `.accounts.json.pending` 恢复记录，权限与 Token 文件一样为 0600；其中包含恢复所需的配置和凭据，成功后会删除。保存中断后，下次启动会先恢复旧状态或完成已提交的状态；恢复失败时暂停加载和写入，保留记录供修复权限后重试。此机制面向单个应用实例的进程中断，不承诺多个进程并发写入或硬件断电时的事务保证。
+Editing an account temporarily writes `.accounts.json.pending` in the configuration directory. It uses mode `0600`, like the token file, and contains the configuration and credentials needed for recovery. A completed save deletes it. After an interrupted save, the next launch restores the previous state or finishes the committed state. If recovery fails, loading and writing stop, and the record remains so it can be retried after file access is fixed. This covers one app instance interrupted while running. It does not cover concurrent writers or a power loss.
 
-## 许可证
+## License
 
 [MIT](LICENSE)
