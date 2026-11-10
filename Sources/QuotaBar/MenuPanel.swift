@@ -142,8 +142,7 @@ struct AccountUsageRow: View {
                     .foregroundStyle(tone)
             }
             if snapshot.usage != nil {
-                ProgressView(value: min(ratio, 1))
-                    .tint(tone)
+                progressBar
             }
             if let error = snapshot.usage?.error {
                 Text(error)
@@ -161,6 +160,22 @@ struct AccountUsageRow: View {
 
     private var ratio: Double {
         UsageMath.ratio(requests: snapshot.usage?.requests ?? 0, limit: snapshot.config.dailyLimit)
+    }
+
+    private var progressBar: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                Capsule()
+                    .fill(barTone)
+                    .frame(width: max(0, geo.size.width * min(ratio, 1)))
+            }
+        }
+        .frame(height: 6)
+    }
+
+    private var barTone: Color {
+        tone == .primary ? .blue : tone
     }
 
     private var headline: String {
