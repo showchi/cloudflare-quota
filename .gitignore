@@ -8,3 +8,5 @@ dist/
 assets/dmg-background.png
 
 .venv/
+assets/AppIcon.iconset/
+assets/AppIcon-1024.png
