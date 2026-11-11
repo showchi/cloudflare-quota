@@ -21,9 +21,11 @@ struct MainWindow: View {
                     Text(L10n.format(.windowSubtitle, UsageMath.defaultDailyLimit, language: model.stored.language))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(refreshStamp)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    TimelineView(.periodic(from: .now, by: 15)) { context in
+                        Text(refreshStamp(at: context.date))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 Stepper(
@@ -55,7 +57,11 @@ struct MainWindow: View {
                         AccountUsageRow(
                             snapshot: snapshot,
                             suggested: snapshot.config.id == model.suggestedAccountID,
-                            language: model.stored.language
+                            language: model.stored.language,
+                            showsActions: true,
+                            onEdit: { model.beginEdit(snapshot.config) },
+                            onToggleEnabled: { model.setEnabled(!snapshot.config.enabled, id: snapshot.config.id) },
+                            onDelete: { pendingDelete = snapshot.config }
                         )
                         .contextMenu {
                             Button(L10n.text(.edit, language: model.stored.language)) { model.beginEdit(snapshot.config) }
@@ -108,6 +114,7 @@ struct MainWindow: View {
                         get: { model.draft ?? draft },
                         set: { model.draft = $0 }
                     ),
+                    model: model,
                     language: model.stored.language,
                     onSave: { model.saveDraft() }
                 )
@@ -147,11 +154,11 @@ struct MainWindow: View {
         }
     }
 
-    private var refreshStamp: String {
-        guard let date = model.lastRefreshedAt else {
+    private func refreshStamp(at now: Date) -> String {
+        guard let relative = RefreshStamp.relative(from: model.lastRefreshedAt, to: now) else {
             return L10n.text(.notRefreshedYet, language: model.stored.language)
         }
-        return L10n.format(.lastRefreshed, RefreshStamp.string(from: date), language: model.stored.language)
+        return L10n.format(.lastRefreshed, relative, language: model.stored.language)
     }
 }
 
@@ -192,10 +199,13 @@ struct PreferenceBar: View {
 
 struct AccountEditor: View {
     @Binding var draft: AccountDraft
+    var model: AppModel
     var language: AppLanguage
     var onSave: () -> Void
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Field?
+
+    static let tokenCreationURL = URL(string: "https://dash.cloudflare.com/profile/api-tokens")!
 
     private enum Field: Hashable {
         case name, accountID, token, limit, threshold
@@ -213,6 +223,20 @@ struct AccountEditor: View {
                     .focused($focused, equals: .accountID)
                 SecureField(draft.isNew ? L10n.text(.token, language: language) : L10n.text(.tokenUnchanged, language: language), text: $draft.token)
                     .focused($focused, equals: .token)
+                HStack {
+                    Button(model.isVerifyingToken ? L10n.text(.verifyingToken, language: language) : L10n.text(.verifyToken, language: language)) {
+                        Task { await model.verifyDraftToken() }
+                    }
+                    .disabled(model.isVerifyingToken || draft.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.isNew)
+                    Link(L10n.text(.createToken, language: language), destination: Self.tokenCreationURL)
+                        .font(.callout)
+                    Spacer()
+                }
+                if let verification = model.tokenVerification {
+                    Text(verification.message)
+                        .font(.caption)
+                        .foregroundStyle(verification.succeeded ? .green : .red)
+                }
                 TextField(L10n.text(.dailyLimit, language: language), value: $draft.dailyLimit, format: .number)
                     .focused($focused, equals: .limit)
                 TextField(L10n.text(.switchPercent, language: language), value: $draft.switchPercent, format: .number)

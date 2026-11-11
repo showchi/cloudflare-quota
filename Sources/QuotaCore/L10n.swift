@@ -79,6 +79,12 @@ public enum L10n {
         case pendingCleanupFailed
         case invalidRecoveryRecord
         case keychainFailed
+        case verifyToken
+        case verifyingToken
+        case tokenVerified
+        case tokenMissingAccount
+        case createToken
+        case moreScripts
     }
 
     public static func text(_ key: Key, language: AppLanguage = .system) -> String {
@@ -175,6 +181,12 @@ public enum L10n {
         .pendingCleanupFailed: "The account was saved, but the recovery record could not be removed. The next launch will try again: %@",
         .invalidRecoveryRecord: "The account recovery record is invalid",
         .keychainFailed: "Keychain error (%d)",
+        .verifyToken: "Verify token",
+        .verifyingToken: "Verifying…",
+        .tokenVerified: "The token works",
+        .tokenMissingAccount: "The token cannot see the Account ID entered here",
+        .createToken: "Create a token",
+        .moreScripts: "%lld more scripts",
     ]
 
     private static let chinese: [Key: String] = [
@@ -255,5 +267,11 @@ public enum L10n {
         .pendingCleanupFailed: "账号已保存，但恢复记录清理失败，下次加载时会重试：%@",
         .invalidRecoveryRecord: "账号恢复记录无效",
         .keychainFailed: "钥匙串错误（%d）",
+        .verifyToken: "验证 Token",
+        .verifyingToken: "验证中…",
+        .tokenVerified: "Token 有效",
+        .tokenMissingAccount: "这个 Token 看不到填写的 Account ID",
+        .createToken: "创建 Token",
+        .moreScripts: "还有 %lld 个脚本",
     ]
 }

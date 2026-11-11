@@ -384,6 +384,267 @@ final class AppModelTests: XCTestCase {
     }
 
     @MainActor
+    func testVerificationDiscardsResultsAfterDraftChanges() async throws {
+        for change in ["cancel", "save", "replace", "reopen", "token", "accountID"] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [ModelURLProtocol.self]
+            let model = AppModel(
+                store: AccountStore(fileURL: directory.appendingPathComponent("accounts.json"), tokens: MemoryTokenStore()),
+                api: CloudflareAPI(session: URLSession(configuration: config)),
+                statusURL: directory.appendingPathComponent("status.json")
+            )
+            let original = AccountDraft(id: UUID(), isNew: true, name: "test", accountID: "", token: "old", dailyLimit: 100_000, switchPercent: 75, enabled: false)
+            model.draft = original
+            let sleeper = ControlledSleeper()
+            ModelURLProtocol.respond = { _ in
+                try? await sleeper.sleep(.seconds(1))
+                return #"{"success":true,"result":[{"id":"old-id","name":"Old"}]}"#
+            }
+            let task = Task { await model.verifyDraftToken() }
+            await waitUntil { sleeper.delays.count == 1 }
+            switch change {
+            case "cancel": model.draft = nil
+            case "save": model.saveDraft()
+            case "replace": model.draft?.id = UUID()
+            case "reopen": model.draft = nil; model.draft = original
+            case "token": model.draft?.token = "new"
+            default: model.draft?.accountID = "new-id"
+            }
+            let expected = model.draft
+            XCTAssertFalse(model.isVerifyingToken)
+            sleeper.finishAll()
+            await task.value
+            XCTAssertEqual(model.draft, expected, change)
+            XCTAssertNil(model.tokenVerification, change)
+            ModelURLProtocol.respond = nil
+        }
+    }
+
+    @MainActor
+    func testOldVerificationCannotFinishNewRequestOrPublishFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ModelURLProtocol.self]
+        let model = AppModel(
+            store: AccountStore(fileURL: directory.appendingPathComponent("accounts.json"), tokens: MemoryTokenStore()),
+            api: CloudflareAPI(session: URLSession(configuration: config)),
+            statusURL: directory.appendingPathComponent("status.json")
+        )
+        model.draft = AccountDraft(id: UUID(), isNew: true, name: "test", accountID: "", token: "old", dailyLimit: 100_000, switchPercent: 75, enabled: false)
+        let sleeper = ControlledSleeper()
+        ModelURLProtocol.respond = { request in
+            if request.httpMethod == "POST" { return #"{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[],"pagesFunctionsInvocationsAdaptiveGroups":[]}]}}}"# }
+            try? await sleeper.sleep(.seconds(1))
+            if request.value(forHTTPHeaderField: "Authorization") == "Bearer old" {
+                return #"{"success":false,"errors":[{"message":"old failure"}]}"#
+            }
+            return #"{"success":true,"result":[{"id":"new-id","name":"New"}]}"#
+        }
+        defer { ModelURLProtocol.respond = nil }
+        let old = Task { await model.verifyDraftToken() }
+        await waitUntil { sleeper.delays.count == 1 }
+        model.draft?.token = "new"
+        let new = Task { await model.verifyDraftToken() }
+        await waitUntil { sleeper.delays.count == 2 }
+        sleeper.finish(0)
+        await old.value
+        XCTAssertTrue(model.isVerifyingToken)
+        XCTAssertNil(model.tokenVerification)
+        sleeper.finish(1)
+        await new.value
+        XCTAssertFalse(model.isVerifyingToken)
+        XCTAssertEqual(model.draft?.accountID, "new-id")
+        XCTAssertEqual(model.tokenVerification?.succeeded, true)
+        model.draft?.token = "changed"
+        XCTAssertNil(model.tokenVerification)
+    }
+
+    @MainActor
+    func testVerificationChecksUsageBeforeSuccessAndDiscardsStaleUsageResults() async throws {
+        for outcome in ["denied", "success", "stale-success", "stale-error"] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let store = AccountStore(fileURL: directory.appendingPathComponent("accounts.json"), tokens: MemoryTokenStore())
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [ModelURLProtocol.self]
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let statusURL = directory.appendingPathComponent("status.json")
+            let model = AppModel(store: store, api: CloudflareAPI(session: URLSession(configuration: config)), statusURL: statusURL, currentDate: { now })
+            model.draft = AccountDraft(id: UUID(), isNew: true, name: "test", accountID: "", token: "tok", dailyLimit: 100_000, switchPercent: 75, enabled: false)
+            let sleeper = ControlledSleeper()
+            ModelURLProtocol.respond = { request in
+                if request.httpMethod != "POST" {
+                    return #"{"success":true,"result":[{"id":"resolved","name":"Only"}]}"#
+                }
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
+                let body = try! JSONSerialization.jsonObject(with: request.httpBody ?? request.httpBodyStream.map { stream in
+                    stream.open(); defer { stream.close() }
+                    var data = Data(); var buffer = [UInt8](repeating: 0, count: 4096)
+                    while stream.hasBytesAvailable { let count = stream.read(&buffer, maxLength: buffer.count); if count <= 0 { break }; data.append(contentsOf: buffer.prefix(count)) }
+                    return data
+                } ?? Data()) as! [String: Any]
+                let variables = try! XCTUnwrap(body["variables"] as? [String: String])
+                XCTAssertEqual(variables["accountTag"], "resolved")
+                let bounds = UsageMath.utcDayBounds(containing: now)
+                let formatter = ISO8601DateFormatter()
+                XCTAssertEqual(variables["start"], formatter.string(from: bounds.start))
+                XCTAssertEqual(variables["end"], formatter.string(from: bounds.end))
+                try? await sleeper.sleep(.seconds(1))
+                if outcome == "denied" || outcome == "stale-error" {
+                    return #"{"errors":[{"message":"Analytics permission denied"}]}"#
+                }
+                return #"{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[],"pagesFunctionsInvocationsAdaptiveGroups":[]}]}}}"#
+            }
+            let task = Task { await model.verifyDraftToken() }
+            await waitUntil { sleeper.delays.count == 1 }
+            XCTAssertNil(model.tokenVerification)
+            XCTAssertEqual(model.draft?.accountID, "")
+            if outcome.hasPrefix("stale") { model.draft?.token = "new" }
+            sleeper.finishAll()
+            await task.value
+            if outcome.hasPrefix("stale") {
+                XCTAssertNil(model.tokenVerification)
+                XCTAssertEqual(model.draft?.accountID, "")
+            } else {
+                XCTAssertEqual(model.tokenVerification?.succeeded, outcome == "success")
+                XCTAssertEqual(model.draft?.accountID, outcome == "success" ? "resolved" : "")
+                if outcome == "denied" { XCTAssertTrue(model.tokenVerification?.message.contains("Analytics permission denied") == true) }
+            }
+            XCTAssertFalse(model.isVerifyingToken)
+            XCTAssertTrue(model.usages.isEmpty)
+            XCTAssertTrue(try store.load().accounts.isEmpty)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: statusURL.path))
+            ModelURLProtocol.respond = nil
+        }
+    }
+
+    @MainActor
+    func testVerifyDraftTokenFillsSingleResolvedAccountID() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AccountStore(fileURL: directory.appendingPathComponent("accounts.json"), tokens: MemoryTokenStore())
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [ModelURLProtocol.self]
+        let model = AppModel(store: store, api: CloudflareAPI(session: URLSession(configuration: sessionConfig)), statusURL: directory.appendingPathComponent("status.json"))
+        model.draft = AccountDraft(id: UUID(), isNew: true, name: "home", accountID: "", token: "tok", dailyLimit: 100_000, switchPercent: 75, enabled: true)
+        ModelURLProtocol.respond = { request in
+            if request.httpMethod == "POST" { return #"{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[],"pagesFunctionsInvocationsAdaptiveGroups":[]}]}}}"# }
+            XCTAssertTrue(request.value(forHTTPHeaderField: "Authorization")!.hasSuffix("tok"))
+            return #"{"success":true,"result":[{"id":"resolved-id","name":"Only"}]}"#
+        }
+        defer { ModelURLProtocol.respond = nil }
+        await model.verifyDraftToken()
+        XCTAssertEqual(model.tokenVerification, TokenVerification(succeeded: true, message: L10n.text(.tokenVerified)))
+        XCTAssertEqual(model.draft?.accountID, "resolved-id")
+        XCTAssertEqual(try store.load().accounts.count, 0)
+    }
+
+    @MainActor
+    func testTokenVerificationRequiresResolvableAccount() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AccountStore(fileURL: directory.appendingPathComponent("accounts.json"), tokens: MemoryTokenStore())
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ModelURLProtocol.self]
+        let model = AppModel(store: store, api: CloudflareAPI(session: URLSession(configuration: config)), statusURL: directory.appendingPathComponent("status.json"))
+        let cases: [(String, String, Bool, String, String)] = [
+            ("", "[]", false, L10n.text(.emptyAccountList), ""),
+            (" \n", "[]", false, L10n.text(.emptyAccountList), " \n"),
+            ("", #"[{"id":"a","name":"A"},{"id":"b","name":"B"}]"#, false, L10n.text(.multipleAccounts), ""),
+            (" ", #"[{"id":"a","name":"A"},{"id":"b","name":"B"}]"#, false, L10n.text(.multipleAccounts), " "),
+            (" \na ", #"[{"id":"a","name":"A"},{"id":"b","name":"B"}]"#, true, L10n.text(.tokenVerified), " \na "),
+            (" ", #"[{"id":"a","name":"A"}]"#, true, L10n.text(.tokenVerified), "a"),
+        ]
+        defer { ModelURLProtocol.respond = nil }
+        for (accountID, result, succeeded, message, expectedID) in cases {
+            model.draft = AccountDraft(id: UUID(), isNew: true, name: "test", accountID: accountID, token: "token", dailyLimit: 100_000, switchPercent: 75, enabled: false)
+            ModelURLProtocol.respond = { request in
+                if request.httpMethod == "POST" { return #"{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[],"pagesFunctionsInvocationsAdaptiveGroups":[]}]}}}"# }
+                XCTAssertTrue(accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Explicit IDs must skip enumeration")
+                return "{\"success\":true,\"result\":\(result)}"
+            }
+            await model.verifyDraftToken()
+            XCTAssertEqual(model.tokenVerification, TokenVerification(succeeded: succeeded, message: message))
+            XCTAssertEqual(model.draft?.accountID, expectedID)
+            XCTAssertFalse(model.isVerifyingToken)
+        }
+        XCTAssertTrue(try store.load().accounts.isEmpty)
+    }
+
+    @MainActor
+    func testVerifyDraftTokenReportsFailuresAndKeepsDraft() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = UUID()
+        let store = AccountStore(fileURL: directory.appendingPathComponent("accounts.json"), tokens: MemoryTokenStore([id: "stored-token"]))
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [ModelURLProtocol.self]
+        let model = AppModel(store: store, api: CloudflareAPI(session: URLSession(configuration: sessionConfig)), statusURL: directory.appendingPathComponent("status.json"))
+        // An existing account with a blank field verifies against the stored token.
+        model.draft = AccountDraft(id: id, isNew: false, name: "home", accountID: "visible", token: "", dailyLimit: 100_000, switchPercent: 75, enabled: true)
+        var usageRequests = 0
+        var denyUsage = false
+        ModelURLProtocol.respond = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer stored-token")
+            guard request.httpMethod == "POST", request.url?.path.hasSuffix("/graphql") == true else {
+                XCTFail("An explicit Account ID must not require account enumeration")
+                return #"{"success":false,"errors":[{"message":"Account Settings Read denied"}]}"#
+            }
+            usageRequests += 1
+            if denyUsage { return #"{"errors":[{"message":"Analytics access denied"}]}"# }
+            return #"{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[],"pagesFunctionsInvocationsAdaptiveGroups":[]}]}}}"#
+        }
+        defer { ModelURLProtocol.respond = nil }
+        await model.verifyDraftToken()
+        XCTAssertEqual(model.tokenVerification?.succeeded, true)
+        XCTAssertEqual(usageRequests, 1)
+        // Analytics rejection fails verification without saving anything.
+        denyUsage = true
+        model.draft?.accountID = "invisible"
+        XCTAssertNil(model.tokenVerification)
+        await model.verifyDraftToken()
+        XCTAssertEqual(model.tokenVerification, TokenVerification(succeeded: false, message: "Analytics access denied"))
+        XCTAssertEqual(usageRequests, 2)
+        XCTAssertEqual(model.draft?.accountID, "invisible")
+        XCTAssertEqual(try store.load().accounts.count, 0)
+    }
+
+    @MainActor
+    func testRefreshFetchesEveryEnabledAccount() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tokens = MemoryTokenStore()
+        let store = AccountStore(fileURL: directory.appendingPathComponent("accounts.json"), tokens: tokens)
+        let first = AccountConfig(name: "first", accountID: "acc-first")
+        let second = AccountConfig(name: "second", accountID: "acc-second", dailyLimit: 50_000)
+        try tokens.save(token: "token-first", for: first.id)
+        try tokens.save(token: "token-second", for: second.id)
+        try store.save(StoredAccounts(accounts: [first, second]))
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [ModelURLProtocol.self]
+        let model = AppModel(store: store, api: CloudflareAPI(session: URLSession(configuration: sessionConfig)), statusURL: directory.appendingPathComponent("status.json"))
+        var tokensSeen: [String] = []
+        ModelURLProtocol.respond = { request in
+            tokensSeen.append(request.value(forHTTPHeaderField: "Authorization")!)
+            return #"{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[{"sum":{"requests":12}}],"pagesFunctionsInvocationsAdaptiveGroups":[]}]}}}"#
+        }
+        defer { ModelURLProtocol.respond = nil }
+        await model.refresh()
+        XCTAssertEqual(Set(tokensSeen), ["Bearer token-first", "Bearer token-second"])
+        XCTAssertEqual(model.usages[first.id]?.requests, 12)
+        XCTAssertEqual(model.usages[second.id]?.requests, 12)
+        XCTAssertEqual(model.suggestedAccountID, first.id)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let status = try decoder.decode(QuotaStatus.self, from: Data(contentsOf: directory.appendingPathComponent("status.json")))
+        XCTAssertEqual(status.suggestedAccountID, first.id)
+        XCTAssertEqual(status.accounts.count, 2)
+    }
+
+    @MainActor
     private func waitUntil(_ condition: () -> Bool) async {
         for _ in 0..<1000 {
             if condition() { return }
@@ -454,12 +715,12 @@ final class AppModelTests: XCTestCase {
 }
 
 private final class ModelURLProtocol: URLProtocol, @unchecked Sendable {
-    @MainActor static var respond: ((URLRequest) -> String)?
+    @MainActor static var respond: ((URLRequest) async -> String)?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Task { @MainActor in
-            let body = Self.respond!(request)
+            let body = await Self.respond!(request)
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data(body.utf8))

@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var hosting: NSHostingView<MenuPanel>?
     private var eventMonitor: Any?
     private var localEventMonitor: Any?
+    private var keyMonitor: Any?
     private let tracePanelEvents = ProcessInfo.processInfo.environment["QUOTA_DEBUG_EVENTS"] == "1"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -70,8 +71,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return event
             }
         }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.keyCode == 53 /* esc */, self.panel?.isVisible == true else { return event }
+            self.panel?.orderOut(nil)
+            self.tracePanelEvent("escape-closed")
+            return nil
+        }
         model.start()
-        if !model.stored.showMenuBar {
+        if !model.stored.showMenuBar || (model.stored.accounts.isEmpty && model.configurationLoadError == nil) {
             showSettings()
         }
     }
@@ -79,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
         if let localEventMonitor { NSEvent.removeMonitor(localEventMonitor) }
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -126,7 +134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func showPanel() {
         updatePanelLayout()
-        panel?.orderFrontRegardless()
+        // The nonactivating panel becomes key without activating the app, so
+        // the local Esc monitor can see key events while it is open.
+        panel?.makeKeyAndOrderFront(nil)
         tracePanelEvent("panel-shown")
     }
 
@@ -138,14 +148,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let root = MenuPanel(model: model, onManage: { [weak self] in
             self?.panel?.orderOut(nil)
             self?.showSettings()
-        }, maximumHeight: max(1, visibleFrame.height - 8))
+        }, maximumHeight: max(1, visibleFrame.height - 8), onLayoutInvalid: { [weak self] in
+            // Measured content height arrives after layout; resize the panel off-cycle.
+            DispatchQueue.main.async { self?.updatePanelLayout() }
+        })
         let view = hosting ?? NSHostingView(rootView: root)
         view.rootView = root
         hosting = view
         view.frame.size = view.fittingSize
         let size = view.fittingSize
         let window = panel ?? {
-            let created = NSPanel(
+            let created = QuotaPanel(
                 contentRect: NSRect(origin: .zero, size: size),
                 styleMask: [.borderless, .nonactivatingPanel],
                 backing: .buffered,
@@ -168,6 +181,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } ?? NSRect(x: visibleFrame.midX, y: visibleFrame.maxY, width: 0, height: 0)
         window.setFrame(PanelGeometry.frame(for: size, anchoredTo: anchor, within: visibleFrame), display: true)
         tracePanelEvent("panel-layout-updated")
+    }
+
+    /// A borderless panel that can take key status without activating the app.
+    private final class QuotaPanel: NSPanel {
+        override var canBecomeKey: Bool { true }
     }
 
     private func tracePanelEvent(_ source: String, event: NSEvent? = nil) {

@@ -22,7 +22,14 @@ final class AppModel {
     var usages: [UUID: AccountUsage] = [:]
     var isRefreshing = false
     private(set) var lastRefreshedAt: Date?
-    var draft: AccountDraft?
+    var draft: AccountDraft? {
+        didSet {
+            if oldValue?.id != draft?.id || oldValue?.token != draft?.token
+                || oldValue?.accountID != draft?.accountID {
+                invalidateTokenVerification()
+            }
+        }
+    }
     var alertMessage: String?
     private(set) var configurationLoadError: String?
     private(set) var statusPublicationError: String?
@@ -44,6 +51,9 @@ final class AppModel {
     private var refreshPending = false
     private var usageDay: Date?
     private var credentialRecoveryErrors: [UUID: String] = [:]
+    private var tokenVerificationVersion = 0
+    var isVerifyingToken = false
+    var tokenVerification: TokenVerification?
     var onMenuTitleChange: (() -> Void)?
 
     init(
@@ -180,11 +190,16 @@ final class AppModel {
         let version = configurationVersion
         let configs = stored.accounts
         let api = CloudflareAPI(session: api.session, restBase: api.restBase, graphqlURL: api.graphqlURL, language: stored.language)
-        var next: [UUID: AccountUsage] = [:]
-        var resolvedIDs: [UUID: String] = [:]
         let now = currentDate()
         let bounds = UsageMath.utcDayBounds(containing: now)
 
+        // Credentials are read serially on the main actor; the Cloudflare queries run concurrently.
+        var next: [UUID: AccountUsage] = [:]
+        struct PreparedAccount: Sendable {
+            var config: AccountConfig
+            var token: String
+        }
+        var prepared: [PreparedAccount] = []
         for config in configs where config.enabled {
             do {
                 if let message = credentialRecoveryErrors[config.id] {
@@ -193,25 +208,47 @@ final class AppModel {
                 guard let token = try store.tokens.token(for: config.id), !token.isEmpty else {
                     throw ValidationError(L10n.text(.missingToken, language: stored.language))
                 }
-                let accountID = try await api.resolveAccountID(config.accountID, token: token)
-                if accountID != config.accountID {
-                    resolvedIDs[config.id] = accountID
-                }
-                let usage = try await api.usage(
-                    accountID: accountID,
-                    token: token,
-                    from: bounds.start,
-                    until: bounds.end
-                )
-                next[config.id] = AccountUsage(
-                    accountID: config.id,
-                    requests: usage.requests,
-                    scripts: usage.scripts,
-                    fetchedAt: currentDate()
-                )
+                prepared.append(PreparedAccount(config: config, token: token))
             } catch {
                 next[config.id] = .failed(accountID: config.id, message: error.localizedDescription, at: now)
             }
+        }
+
+        var resolvedIDs: [UUID: String] = [:]
+        await withTaskGroup(of: (UUID, String?, Result<(requests: Int, scripts: [ScriptUsage]), Error>).self) { group in
+            for item in prepared {
+                group.addTask {
+                    do {
+                        let accountID = try await api.resolveAccountID(item.config.accountID, token: item.token)
+                        let usage = try await api.usage(
+                            accountID: accountID,
+                            token: item.token,
+                            from: bounds.start,
+                            until: bounds.end
+                        )
+                        let resolved = accountID == item.config.accountID ? nil : accountID
+                        return (item.config.id, resolved, .success(usage))
+                    } catch {
+                        return (item.config.id, nil, .failure(error))
+                    }
+                }
+            }
+            var resolved: [UUID: String] = [:]
+            for await (id, accountID, result) in group {
+                if let accountID { resolved[id] = accountID }
+                switch result {
+                case .success(let usage):
+                    next[id] = AccountUsage(
+                        accountID: id,
+                        requests: usage.requests,
+                        scripts: usage.scripts,
+                        fetchedAt: currentDate()
+                    )
+                case .failure(let error):
+                    next[id] = .failed(accountID: id, message: error.localizedDescription, at: now)
+                }
+            }
+            resolvedIDs = resolved
         }
 
         let committedAt = currentDate()
@@ -238,6 +275,7 @@ final class AppModel {
 
     func beginAdd() {
         AppActivation.becomeRegular()
+        invalidateTokenVerification()
         draft = AccountDraft(
             id: UUID(),
             isNew: true,
@@ -252,6 +290,7 @@ final class AppModel {
 
     func beginEdit(_ config: AccountConfig) {
         AppActivation.becomeRegular()
+        invalidateTokenVerification()
         draft = AccountDraft(
             id: config.id,
             isNew: false,
@@ -319,6 +358,55 @@ final class AppModel {
         showOperationAlert(cleanupWarning)
         configurationChanged(invalidating: config.id)
         Task { await refresh() }
+    }
+
+    private func invalidateTokenVerification() {
+        tokenVerificationVersion += 1
+        tokenVerification = nil
+        isVerifyingToken = false
+    }
+
+    /// Checks a draft token against the live API without saving it. Fills the
+    /// Account ID when the token sees exactly one account.
+    func verifyDraftToken() async {
+        guard let draft, !isVerifyingToken else { return }
+        let language = stored.language
+        let token = draft.token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effective: String?
+        if token.isEmpty {
+            effective = draft.isNew ? nil : (try? store.tokens.token(for: draft.id)) ?? nil
+        } else {
+            effective = token
+        }
+        guard let effective, !effective.isEmpty else {
+            tokenVerification = TokenVerification(
+                succeeded: false,
+                message: L10n.text(.missingToken, language: language)
+            )
+            return
+        }
+        tokenVerification = nil
+        isVerifyingToken = true
+        tokenVerificationVersion += 1
+        let version = tokenVerificationVersion
+        defer {
+            if tokenVerificationVersion == version { isVerifyingToken = false }
+        }
+        let api = CloudflareAPI(session: api.session, restBase: api.restBase, graphqlURL: api.graphqlURL, language: language)
+        do {
+            let accountID = try await api.resolveAccountID(draft.accountID, token: effective)
+            guard tokenVerificationVersion == version else { return }
+            let bounds = UsageMath.utcDayBounds(containing: currentDate())
+            _ = try await api.usage(accountID: accountID, token: effective, from: bounds.start, until: bounds.end)
+            guard tokenVerificationVersion == version else { return }
+            if draft.accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.draft?.accountID = accountID
+            }
+            tokenVerification = TokenVerification(succeeded: true, message: L10n.text(.tokenVerified, language: language))
+        } catch {
+            guard tokenVerificationVersion == version else { return }
+            tokenVerification = TokenVerification(succeeded: false, message: error.localizedDescription)
+        }
     }
 
     func delete(_ id: UUID) {
@@ -504,4 +592,9 @@ struct ValidationError: LocalizedError {
     }
 
     var errorDescription: String? { message }
+}
+
+struct TokenVerification: Equatable {
+    var succeeded: Bool
+    var message: String
 }

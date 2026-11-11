@@ -5,6 +5,8 @@ struct MenuPanel: View {
     @Bindable var model: AppModel
     var onManage: () -> Void = {}
     var maximumHeight: CGFloat = 600
+    var onLayoutInvalid: () -> Void = {}
+    @State private var measuredContentHeight: CGFloat?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -12,17 +14,28 @@ struct MenuPanel: View {
                 Text(L10n.text(.todayUsage, language: model.stored.language))
                     .font(.headline)
                 Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(refreshStamp)
-                    Text(L10n.format(.resetsRelative, model.resetsAt.formatted(.relative(presentation: .numeric)), language: model.stored.language))
+                TimelineView(.periodic(from: .now, by: 15)) { context in
+                    VStack(alignment: .trailing, spacing: 2) {
+                        if let relative = RefreshStamp.relative(from: model.lastRefreshedAt, to: context.date) {
+                            Text(L10n.format(.lastRefreshed, relative, language: model.stored.language))
+                        } else {
+                            Text(L10n.text(.notRefreshedYet, language: model.stored.language))
+                        }
+                        Text(L10n.format(.resetsRelative, model.resetsAt.formatted(.relative(presentation: .numeric)), language: model.stored.language))
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
 
-            if !model.stored.accounts.isEmpty || model.statusPublicationError != nil {
+            if !model.stored.accounts.isEmpty {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) { accountContent }
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                            guard height != measuredContentHeight else { return }
+                            measuredContentHeight = height
+                            onLayoutInvalid()
+                        }
                 }
                 .frame(height: accountListHeight)
             } else {
@@ -72,30 +85,30 @@ struct MenuPanel: View {
         }
     }
 
+    /// Measured content height, capped only by the screen so tall multi-script
+    /// rows stay fully visible; the seed covers the first layout pass.
     private var accountListHeight: CGFloat {
-        MenuPanelLayout.accountListHeight(maximumPanelHeight: maximumHeight)
-    }
-
-    private var refreshStamp: String {
-        guard let date = model.lastRefreshedAt else {
-            return L10n.text(.notRefreshedYet, language: model.stored.language)
+        let cap = MenuPanelLayout.listHeightCap(maximumPanelHeight: maximumHeight)
+        guard let measured = measuredContentHeight, measured > 0 else {
+            return MenuPanelLayout.seedHeight(accountCount: model.stored.accounts.count)
         }
-        return L10n.format(.lastRefreshed, RefreshStamp.string(from: date), language: model.stored.language)
+        return min(measured, cap)
     }
 }
 
+@MainActor
 enum RefreshStamp {
-    static func string(from date: Date) -> String {
-        formatter.string(from: date)
-    }
-
-    private static let formatter: DateFormatter = {
-        let formatter = DateFormatter()
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
         formatter.locale = .autoupdatingCurrent
-        formatter.dateStyle = .short
-        formatter.timeStyle = .medium
         return formatter
     }()
+
+    /// A relative age such as "3 minutes ago"; the caller's timeline recomputes it.
+    static func relative(from date: Date?, to now: Date) -> String? {
+        guard let date else { return nil }
+        return relativeFormatter.localizedString(for: date, relativeTo: now)
+    }
 }
 
 enum MenuPanelLayout {
@@ -105,12 +118,16 @@ enum MenuPanelLayout {
     /// Header, warning, buttons, padding, and the gaps between them.
     static let chromeHeight: CGFloat = 132
 
-    static var accountListHeight: CGFloat {
-        CGFloat(visibleAccounts) * rowHeight + CGFloat(visibleAccounts - 1) * rowSpacing
+    /// Seeds the first layout before the content height is measured. Row heights
+    /// vary with the script breakdown, so this never acts as a limit.
+    static func seedHeight(accountCount: Int) -> CGFloat {
+        let rows = CGFloat(max(1, min(accountCount, visibleAccounts)))
+        return rows * rowHeight + (rows - 1) * rowSpacing
     }
 
-    static func accountListHeight(maximumPanelHeight: CGFloat) -> CGFloat {
-        min(accountListHeight, max(1, maximumPanelHeight - chromeHeight))
+    /// The list may use all the screen height above the chrome; only overflow scrolls.
+    static func listHeightCap(maximumPanelHeight: CGFloat) -> CGFloat {
+        max(1, maximumPanelHeight - chromeHeight)
     }
 }
 
@@ -118,12 +135,18 @@ struct AccountUsageRow: View {
     var snapshot: AccountSnapshot
     var suggested: Bool
     var language: AppLanguage
+    var showsActions = false
+    var onEdit: () -> Void = {}
+    var onToggleEnabled: () -> Void = {}
+    var onDelete: () -> Void = {}
+    @State private var showsAllScripts = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(snapshot.config.name)
                     .font(.body.weight(.semibold))
+                    .lineLimit(1)
                 if suggested {
                     Text(L10n.text(.suggested, language: language))
                         .font(.caption2.weight(.semibold))
@@ -140,6 +163,9 @@ struct AccountUsageRow: View {
                 Text(headline)
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(tone)
+                if showsActions {
+                    actionsMenu
+                }
             }
             if snapshot.usage != nil {
                 progressBar
@@ -150,12 +176,46 @@ struct AccountUsageRow: View {
                     .foregroundStyle(.red)
                     .lineLimit(2)
             } else if let scripts = snapshot.usage?.scripts, !scripts.isEmpty {
-                Text(scripts.prefix(3).map { "\($0.scriptName) \(formatted($0.requests))" }.joined(separator: " · "))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                scriptBreakdown(scripts)
             }
         }
+    }
+
+    private var actionsMenu: some View {
+        Menu {
+            Button(L10n.text(.edit, language: language)) { onEdit() }
+            Button(snapshot.config.enabled ? L10n.text(.disable, language: language) : L10n.text(.enable, language: language)) { onToggleEnabled() }
+            Button(L10n.text(.delete, language: language), role: .destructive) { onDelete() }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel(L10n.text(.editAccount, language: language))
+    }
+
+    @ViewBuilder
+    private func scriptBreakdown(_ scripts: [ScriptUsage]) -> some View {
+        let visible = showsAllScripts ? scripts : Array(scripts.prefix(3))
+        Button {
+            showsAllScripts.toggle()
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(visible.indices, id: \.self) { index in
+                    Text("\(visible[index].scriptName) \(formatted(visible[index].requests))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                if !showsAllScripts, scripts.count > visible.count {
+                    Text(L10n.format(.moreScripts, scripts.count - visible.count, language: language))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private var ratio: Double {

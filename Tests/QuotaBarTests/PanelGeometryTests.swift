@@ -11,10 +11,13 @@ final class PanelGeometryTests: XCTestCase {
         }
     }
 
-    func testAccountListStaysAtEightRowsUntilTheScreenLimit() {
-        XCTAssertEqual(MenuPanelLayout.accountListHeight, 486)
-        XCTAssertEqual(MenuPanelLayout.accountListHeight(maximumPanelHeight: 800), 486)
-        XCTAssertEqual(MenuPanelLayout.accountListHeight(maximumPanelHeight: 500), 368)
+    func testSeedHeightFitsTheVisibleRowsAndCapsFollowTheScreen() {
+        XCTAssertEqual(MenuPanelLayout.seedHeight(accountCount: 8), 486)
+        XCTAssertEqual(MenuPanelLayout.seedHeight(accountCount: 2), 114)
+        XCTAssertEqual(MenuPanelLayout.seedHeight(accountCount: 12), 486)
+        XCTAssertEqual(MenuPanelLayout.seedHeight(accountCount: 0), 52)
+        XCTAssertEqual(MenuPanelLayout.listHeightCap(maximumPanelHeight: 800), 668)
+        XCTAssertEqual(MenuPanelLayout.listHeightCap(maximumPanelHeight: 500), 368)
     }
 
     func testNormalPanelStaysBelowItsStatusItem() {
